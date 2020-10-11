@@ -6,3 +6,6 @@ npm-debug.log
 package-lock.json
 test/*.log
 *.class
+*.classpath
+*.project
+*.settings
