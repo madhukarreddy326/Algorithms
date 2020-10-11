@@ -3,15 +3,15 @@ package LinkedList;
 public class FindMiddleName {
 public static void main(String args[])
 {
-	LinkedList linkedList = new LinkedList();
-	LinkedList.Node head =linkedList.head();
-	linkedList.add(new LinkedList.Node("1"));
-	linkedList.add(new LinkedList.Node("2"));
-	linkedList.add(new LinkedList.Node("3"));
-	linkedList.add(new LinkedList.Node("4"));
-	LinkedList.Node current = head;
+	LinkedList1 linkedList = new LinkedList1();
+	LinkedList1.Node head =linkedList.head();
+	linkedList.add(new LinkedList1.Node("1"));
+	linkedList.add(new LinkedList1.Node("2"));
+	linkedList.add(new LinkedList1.Node("3"));
+	linkedList.add(new LinkedList1.Node("4"));
+	LinkedList1.Node current = head;
 	int length =0;
-	LinkedList.Node middle = head;
+	LinkedList1.Node middle = head;
 	
 	while(current.next() !=null)
 	{
@@ -31,12 +31,12 @@ public static void main(String args[])
 	
 }
 }
-class LinkedList
+class LinkedList1
 {
 	private Node head;
 	private Node tail;
 	
-	public LinkedList()
+	public LinkedList1()
 	{
 		this.head = new Node("head");
 		tail = head;
