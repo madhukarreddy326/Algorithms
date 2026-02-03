@@ -1,0 +1,226 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "etcd-backup.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "etcd-backup.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "etcd-backup.labels" . | nindent 8 }}
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "etcd-backup.labels" . | nindent 12 }}
+        spec:
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "etcd-backup.serviceAccountName" . }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          restartPolicy: OnFailure
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          hostNetwork: true
+          hostPID: true
+          volumes:
+            - name: etcd-certs
+              hostPath:
+                path: {{ .Values.etcd.certPath }}
+                type: Directory
+            - name: backup-script
+              configMap:
+                name: {{ include "etcd-backup.fullname" . }}-script
+                defaultMode: 0755
+            - name: backup-storage
+              emptyDir: {}
+            {{- if .Values.storage.nfs.enabled }}
+            - name: nfs-storage
+              nfs:
+                server: {{ .Values.storage.nfs.server }}
+                path: {{ .Values.storage.nfs.path }}
+            {{- end }}
+            {{- if .Values.storage.pvc.enabled }}
+            - name: pvc-storage
+              persistentVolumeClaim:
+                claimName: {{ .Values.storage.pvc.existingClaim | default (include "etcd-backup.fullname" .) }}
+            {{- end }}
+            {{- with .Values.extraVolumes }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          initContainers:
+            {{- if .Values.preBackupHooks.enabled }}
+            - name: pre-backup-hook
+              image: bitnami/kubectl:latest
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  echo "Running pre-backup hooks..."
+                  {{- range .Values.preBackupHooks.commands }}
+                  {{ . }}
+                  {{- end }}
+              env:
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+            {{- end }}
+          containers:
+            - name: etcd-backup
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["/backup/backup-etcd.sh"]
+              env:
+                - name: ETCDCTL_API
+                  value: "3"
+                - name: ETCD_ENDPOINTS
+                  value: {{ .Values.etcd.endpoints | quote }}
+                - name: ETCD_CACERT
+                  value: "/etc/etcd/certs/{{ .Values.etcd.caCert }}"
+                - name: ETCD_CERT
+                  value: "/etc/etcd/certs/{{ .Values.etcd.clientCert }}"
+                - name: ETCD_KEY
+                  value: "/etc/etcd/certs/{{ .Values.etcd.clientKey }}"
+                - name: BACKUP_DIR
+                  value: "/backup/snapshots"
+                - name: CLUSTER_NAME
+                  value: {{ .Values.multiCluster.clusterName | default "default" | quote }}
+                - name: RETENTION_DAYS
+                  value: {{ .Values.backup.retentionDays | quote }}
+                - name: COMPRESSION_ENABLED
+                  value: {{ .Values.backup.compression | quote }}
+                - name: VERIFICATION_ENABLED
+                  value: {{ .Values.verification.enabled | quote }}
+                - name: LOG_LEVEL
+                  value: {{ .Values.logLevel | quote }}
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              volumeMounts:
+                - name: etcd-certs
+                  mountPath: /etc/etcd/certs
+                  readOnly: true
+                - name: backup-script
+                  mountPath: /backup
+                - name: backup-storage
+                  mountPath: /backup/snapshots
+                {{- with .Values.extraVolumeMounts }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+            
+            {{- if .Values.storage.s3.enabled }}
+            - name: upload-to-s3
+              image: "{{ .Values.toolsImage.repository }}:{{ .Values.toolsImage.tag }}"
+              imagePullPolicy: {{ .Values.toolsImage.pullPolicy }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  echo "Uploading backup to S3..."
+                  SNAPSHOT_FILE=$(ls -t /backup/snapshots/*.db | head -1)
+                  SNAPSHOT_NAME=$(basename $SNAPSHOT_FILE)
+                  S3_PATH="s3://{{ .Values.storage.s3.bucket }}/{{ .Values.storage.s3.prefix }}/{{ .Values.multiCluster.clusterName | default "default" }}/$(date +%Y/%m/%d)/$SNAPSHOT_NAME"
+                  
+                  aws s3 cp $SNAPSHOT_FILE $S3_PATH \
+                    --region {{ .Values.storage.s3.region }} \
+                    --storage-class {{ .Values.storage.s3.storageClass }} \
+                    {{- if .Values.storage.s3.encryption }}
+                    --server-side-encryption {{ .Values.storage.s3.encryption }} \
+                    {{- end }}
+                    --only-show-errors
+                  
+                  echo "Backup uploaded successfully to: $S3_PATH"
+                  echo "File size: $(du -h $SNAPSHOT_FILE | cut -f1)"
+                  
+                  # Cleanup old backups
+                  echo "Cleaning up backups older than {{ .Values.backup.retentionDays }} days..."
+                  CUTOFF_DATE=$(date -d "{{ .Values.backup.retentionDays }} days ago" +%Y-%m-%d)
+                  aws s3 ls s3://{{ .Values.storage.s3.bucket }}/{{ .Values.storage.s3.prefix }}/{{ .Values.multiCluster.clusterName | default "default" }}/ \
+                    --recursive --region {{ .Values.storage.s3.region }} | \
+                    awk '{if ($1 < "'$CUTOFF_DATE'") print $4}' | \
+                    xargs -I {} aws s3 rm s3://{{ .Values.storage.s3.bucket }}/{} --region {{ .Values.storage.s3.region }} || true
+              env:
+                {{- if not .Values.storage.s3.useIAMRole }}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.storage.s3.accessKeySecret.name }}
+                      key: {{ .Values.storage.s3.accessKeySecret.accessKeyField }}
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.storage.s3.accessKeySecret.name }}
+                      key: {{ .Values.storage.s3.accessKeySecret.secretKeyField }}
+                {{- end }}
+                - name: AWS_DEFAULT_REGION
+                  value: {{ .Values.storage.s3.region }}
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backup/snapshots
+            {{- end }}
+            
+            {{- if .Values.storage.gcs.enabled }}
+            - name: upload-to-gcs
+              image: google/cloud-sdk:alpine
+              imagePullPolicy: {{ .Values.toolsImage.pullPolicy }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  echo "Uploading backup to GCS..."
+                  {{- if not .Values.storage.gcs.useWorkloadIdentity }}
+                  gcloud auth activate-service-account --key-file=/secrets/gcs/service-account.json
+                  {{- end }}
+                  SNAPSHOT_FILE=$(ls -t /backup/snapshots/*.db | head -1)
+                  SNAPSHOT_NAME=$(basename $SNAPSHOT_FILE)
+                  GCS_PATH="gs://{{ .Values.storage.gcs.bucket }}/{{ .Values.storage.gcs.prefix }}/{{ .Values.multiCluster.clusterName | default "default" }}/$(date +%Y/%m/%d)/$SNAPSHOT_NAME"
+                  
+                  gsutil cp $SNAPSHOT_FILE $GCS_PATH
+                  echo "Backup uploaded successfully to: $GCS_PATH"
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backup/snapshots
+                {{- if not .Values.storage.gcs.useWorkloadIdentity }}
+                - name: gcs-credentials
+                  mountPath: /secrets/gcs
+                  readOnly: true
+                {{- end }}
+            {{- end }}
+            
+            {{- if .Values.postBackupHooks.enabled }}
+            - name: post-backup-hook
+              image: bitnami/kubectl:latest
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  echo "Running post-backup hooks..."
+                  {{- range .Values.postBackupHooks.commands }}
+                  {{ . }}
+                  {{- end }}
+              env:
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+            {{- end }}

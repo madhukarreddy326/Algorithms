@@ -1,0 +1,117 @@
+---
+# Manual etcd Backup Job
+# Usage: kubectl apply -f manual-backup-job.yaml
+# This creates a one-time backup job that can be run manually
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: etcd-manual-backup
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: etcd-manual-backup
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: etcd-manual-backup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: etcd-manual-backup
+subjects:
+  - kind: ServiceAccount
+    name: etcd-manual-backup
+    namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etcd-manual-backup-script
+  namespace: kube-system
+data:
+  backup.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    
+    echo "Starting manual etcd backup..."
+    
+    SNAPSHOT_FILE="/backup/etcd-manual-backup-$(date +%Y%m%d-%H%M%S).db"
+    
+    ETCDCTL_API=3 etcdctl snapshot save "$SNAPSHOT_FILE" \
+      --endpoints=https://127.0.0.1:2379 \
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+      --cert=/etc/kubernetes/pki/etcd/server.crt \
+      --key=/etc/kubernetes/pki/etcd/server.key
+    
+    echo "Backup saved: $SNAPSHOT_FILE"
+    echo "Verifying backup..."
+    
+    ETCDCTL_API=3 etcdctl snapshot status "$SNAPSHOT_FILE" --write-out=table
+    
+    echo "Backup completed successfully!"
+    ls -lh "$SNAPSHOT_FILE"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etcd-manual-backup
+  namespace: kube-system
+  labels:
+    app: etcd-backup
+    type: manual
+spec:
+  ttlSecondsAfterFinished: 3600  # Auto-cleanup after 1 hour
+  template:
+    metadata:
+      labels:
+        app: etcd-backup
+        type: manual
+    spec:
+      serviceAccountName: etcd-manual-backup
+      restartPolicy: OnFailure
+      hostNetwork: true
+      hostPID: true
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: backup
+          image: registry.k8s.io/etcd:3.5.12-0
+          command: ["/bin/sh", "/scripts/backup.sh"]
+          volumeMounts:
+            - name: etcd-certs
+              mountPath: /etc/kubernetes/pki/etcd
+              readOnly: true
+            - name: backup-script
+              mountPath: /scripts
+            - name: backup-storage
+              mountPath: /backup
+          securityContext:
+            privileged: true
+      volumes:
+        - name: etcd-certs
+          hostPath:
+            path: /etc/kubernetes/pki/etcd
+            type: Directory
+        - name: backup-script
+          configMap:
+            name: etcd-manual-backup-script
+            defaultMode: 0755
+        - name: backup-storage
+          hostPath:
+            path: /var/lib/etcd-backups
+            type: DirectoryOrCreate

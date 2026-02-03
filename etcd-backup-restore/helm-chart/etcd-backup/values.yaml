@@ -1,0 +1,281 @@
+# Default values for etcd-backup
+# This is a YAML-formatted file.
+
+## Backup Configuration
+backup:
+  # Backup schedule in cron format
+  # Default: Every 6 hours
+  schedule: "0 */6 * * *"
+  
+  # How many successful backup jobs to keep
+  successfulJobsHistoryLimit: 3
+  
+  # How many failed backup jobs to keep
+  failedJobsHistoryLimit: 3
+  
+  # Backup retention period in days
+  retentionDays: 30
+  
+  # Timeout for backup operation (seconds)
+  timeout: 600
+  
+  # Enable backup compression
+  compression: true
+  
+  # Enable backup encryption
+  encryption:
+    enabled: true
+    # Encryption key from secret (if enabled)
+    secretName: etcd-backup-encryption
+    secretKey: encryption-key
+
+## etcd Configuration
+etcd:
+  # etcd endpoints (comma-separated for cluster)
+  endpoints: "https://127.0.0.1:2379"
+  
+  # etcd version
+  version: "3.5.0"
+  
+  # TLS certificates location (on the node)
+  certPath: "/etc/kubernetes/pki/etcd"
+  
+  # Certificate file names
+  caCert: "ca.crt"
+  clientCert: "server.crt"
+  clientKey: "server.key"
+  
+  # etcd data directory
+  dataDir: "/var/lib/etcd"
+
+## Storage Configuration
+storage:
+  # Storage type: s3, gcs, azure, nfs, pvc
+  type: s3
+  
+  ## AWS S3 Storage
+  s3:
+    enabled: true
+    # S3 bucket name
+    bucket: "etcd-backups"
+    # AWS region
+    region: "us-east-1"
+    # S3 path prefix
+    prefix: "kubernetes/etcd"
+    # Storage class (STANDARD, STANDARD_IA, GLACIER)
+    storageClass: "STANDARD_IA"
+    # Use IAM role for authentication (recommended)
+    useIAMRole: true
+    # Or use access keys from secret
+    accessKeySecret:
+      name: aws-credentials
+      accessKeyField: access-key-id
+      secretKeyField: secret-access-key
+    # Enable server-side encryption
+    encryption: "AES256"
+  
+  ## Google Cloud Storage
+  gcs:
+    enabled: false
+    bucket: "etcd-backups"
+    prefix: "kubernetes/etcd"
+    # Use workload identity (recommended)
+    useWorkloadIdentity: true
+    # Or use service account key
+    serviceAccountSecret:
+      name: gcs-credentials
+      keyField: service-account.json
+  
+  ## Azure Blob Storage
+  azure:
+    enabled: false
+    storageAccount: "etcdbackups"
+    container: "backups"
+    prefix: "kubernetes/etcd"
+    # Use managed identity (recommended)
+    useManagedIdentity: true
+    # Or use storage account key
+    storageKeySecret:
+      name: azure-credentials
+      keyField: storage-account-key
+  
+  ## NFS Storage
+  nfs:
+    enabled: false
+    server: "nfs-server.example.com"
+    path: "/exports/etcd-backups"
+    mountOptions:
+      - "vers=4.1"
+      - "rsize=1048576"
+      - "wsize=1048576"
+  
+  ## Persistent Volume Claim
+  pvc:
+    enabled: false
+    # Existing PVC name
+    existingClaim: ""
+    # Or create new PVC
+    storageClass: "standard"
+    size: "50Gi"
+    accessModes:
+      - ReadWriteOnce
+
+## Container Configuration
+image:
+  repository: registry.k8s.io/etcd
+  pullPolicy: IfNotPresent
+  tag: "3.5.12-0"
+
+# Additional tools image (includes aws-cli, gsutil, etc.)
+toolsImage:
+  repository: amazon/aws-cli
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+
+## Service Account Configuration
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations:
+    # For AWS IAM role
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/etcd-backup-role
+    # For GCP workload identity
+    # iam.gke.io/gcp-service-account: etcd-backup@PROJECT_ID.iam.gserviceaccount.com
+  # The name of the service account to use
+  name: "etcd-backup"
+
+## RBAC Configuration
+rbac:
+  create: true
+
+## Pod Security
+podSecurityContext:
+  runAsNonRoot: false  # Need root to access etcd certs
+  runAsUser: 0
+  fsGroup: 0
+
+securityContext:
+  privileged: true  # Need privileged to access host filesystem
+  capabilities:
+    add:
+    - SYS_ADMIN
+
+## Resource Limits
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+## Node Selector (run on master nodes)
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+
+## Tolerations (allow scheduling on master nodes)
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+
+## Affinity
+affinity: {}
+
+## Monitoring Configuration
+monitoring:
+  enabled: true
+  
+  # Prometheus ServiceMonitor
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    interval: 30s
+    labels:
+      prometheus: kube-prometheus
+  
+  # Grafana Dashboard
+  grafanaDashboard:
+    enabled: true
+    namespace: monitoring
+  
+  # Metrics port
+  metricsPort: 9090
+
+## Alerting Configuration
+alerting:
+  enabled: true
+  
+  # Slack notifications
+  slack:
+    enabled: false
+    webhookUrl: ""
+    channel: "#alerts"
+  
+  # Email notifications
+  email:
+    enabled: false
+    smtpHost: "smtp.example.com"
+    smtpPort: 587
+    from: "etcd-backup@example.com"
+    to: "devops@example.com"
+  
+  # PagerDuty
+  pagerduty:
+    enabled: false
+    integrationKey: ""
+
+## Pre-backup hooks (run before backup)
+preBackupHooks:
+  enabled: false
+  commands: []
+  # Example:
+  # - "kubectl get nodes"
+  # - "kubectl cluster-info"
+
+## Post-backup hooks (run after backup)
+postBackupHooks:
+  enabled: false
+  commands: []
+  # Example:
+  # - "curl -X POST https://api.example.com/notify"
+
+## Backup verification
+verification:
+  enabled: true
+  # Verify snapshot integrity after backup
+  verifyIntegrity: true
+  # Verify backup can be restored (slower)
+  verifyRestore: false
+
+## Multi-cluster support
+multiCluster:
+  enabled: false
+  # Cluster identifier for backup naming
+  clusterName: "production"
+  # Cluster region/zone
+  clusterRegion: "us-east-1"
+
+## Log level (debug, info, warn, error)
+logLevel: "info"
+
+## Additional environment variables
+extraEnv: []
+# - name: CUSTOM_VAR
+#   value: "custom-value"
+
+## Additional volumes
+extraVolumes: []
+# - name: custom-volume
+#   emptyDir: {}
+
+## Additional volume mounts
+extraVolumeMounts: []
+# - name: custom-volume
+#   mountPath: /custom/path

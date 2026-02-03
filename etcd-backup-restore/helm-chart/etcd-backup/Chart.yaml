@@ -1,0 +1,19 @@
+apiVersion: v2
+name: etcd-backup
+description: A Helm chart for automated etcd backup and restore in Kubernetes
+type: application
+version: 1.0.0
+appVersion: "3.5.0"
+keywords:
+  - etcd
+  - backup
+  - restore
+  - disaster-recovery
+  - kubernetes
+home: https://github.com/yourusername/etcd-backup-restore
+sources:
+  - https://github.com/etcd-io/etcd
+maintainers:
+  - name: DevOps Team
+    email: devops@yourcompany.com
+icon: https://raw.githubusercontent.com/etcd-io/etcd/master/logos/etcd-horizontal-color.png
