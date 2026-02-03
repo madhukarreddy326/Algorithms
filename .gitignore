@@ -1,11 +1,36 @@
-# NodeJS specific #
-.nyc_output/
-coverage/
-node_modules/
-npm-debug.log
-package-lock.json
-test/*.log
+# Java
 *.class
-*.classpath
-*.project
-*.settings
+*.jar
+*.war
+*.ear
+target/
+.idea/
+*.iml
+
+# etcd backups (don't commit actual backup files)
+*.db
+*.db.gz
+*.db.enc
+*.metadata.json
+etcd-backup-restore/test-backups/
+
+# Terraform
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Kubernetes
+kubeconfig
+
+# Secrets
+*.pem
+*.key
+*-key.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,0 +1,103 @@
+---
+# etcd Restore Helper Pod
+# Usage: 
+#   1. Upload snapshot to /var/lib/etcd-backups/ on master node
+#   2. kubectl apply -f restore-pod.yaml
+#   3. kubectl exec -it etcd-restore-helper -- /bin/bash
+#   4. Run restore commands manually
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: etcd-restore-helper
+  namespace: kube-system
+  labels:
+    app: etcd-restore
+spec:
+  hostNetwork: true
+  hostPID: true
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
+  containers:
+    - name: restore-helper
+      image: registry.k8s.io/etcd:3.5.12-0
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: etcd-certs
+          mountPath: /etc/kubernetes/pki/etcd
+          readOnly: true
+        - name: etcd-data
+          mountPath: /var/lib/etcd
+        - name: backup-storage
+          mountPath: /backup
+        - name: kubernetes-manifests
+          mountPath: /etc/kubernetes/manifests
+      securityContext:
+        privileged: true
+      env:
+        - name: ETCDCTL_API
+          value: "3"
+  volumes:
+    - name: etcd-certs
+      hostPath:
+        path: /etc/kubernetes/pki/etcd
+        type: Directory
+    - name: etcd-data
+      hostPath:
+        path: /var/lib/etcd
+        type: Directory
+    - name: backup-storage
+      hostPath:
+        path: /var/lib/etcd-backups
+        type: Directory
+    - name: kubernetes-manifests
+      hostPath:
+        path: /etc/kubernetes/manifests
+        type: Directory
+  restartPolicy: Never
+
+---
+# Example usage inside the pod:
+# 
+# # List available backups
+# ls -lh /backup/
+# 
+# # Verify snapshot
+# etcdctl snapshot status /backup/etcd-snapshot-xxx.db --write-out=table
+# 
+# # Stop API server (from host)
+# exit
+# kubectl delete pod -n kube-system etcd-restore-helper
+# ssh master-node
+# mv /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/
+# 
+# # Start restore helper again
+# kubectl apply -f restore-pod.yaml
+# kubectl exec -it etcd-restore-helper -- /bin/bash
+# 
+# # Restore snapshot
+# etcdctl snapshot restore /backup/etcd-snapshot-xxx.db \
+#   --data-dir=/var/lib/etcd-restore \
+#   --name=master \
+#   --initial-cluster=master=https://MASTER_IP:2380 \
+#   --initial-advertise-peer-urls=https://MASTER_IP:2380
+# 
+# # Replace etcd data
+# rm -rf /var/lib/etcd
+# mv /var/lib/etcd-restore /var/lib/etcd
+# 
+# # Start API server (from host)
+# exit
+# ssh master-node
+# mv /tmp/kube-apiserver.yaml /etc/kubernetes/manifests/
+# 
+# # Verify cluster
+# kubectl get nodes
+# kubectl get pods --all-namespaces
